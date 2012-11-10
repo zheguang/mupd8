@@ -22,9 +22,16 @@ import scala.collection.mutable
 import java.io._
 import java.util.concurrent.{ArrayBlockingQueue, TimeUnit}
 import java.net.{InetAddress,Socket,SocketException}
+import com.walmartlabs.mupd8.messaging.MessageHandler
+import com.walmartlabs.mupd8.messaging.MessageParser
+import com.walmartlabs.mupd8.messaging.MessageKind
+import com.walmartlabs.mupd8.messaging.LoadReDistMessage
+import com.walmartlabs.mupd8.messaging.NodeStatusReportMessage
+import com.walmartlabs.mupd8.messaging.Message
+import messaging.MessageTransportKind
 
 class MessageServerClient (
-    func : String => Unit,
+    messageHandler: MessageHandler,
     serverHost : String,
     serverPort : Int,
     timeout : Long = 2000L)
@@ -37,12 +44,18 @@ class MessageServerClient (
 
   val msgQueue = new ArrayBlockingQueue[String](10)
 
-  def messageDecoder(callback : String => Unit, str : String) = callback(str)
-
+  def messageDecoder(callback: MessageHandler, str: String) = callback.actOnMessage(MessageParser.getMessage(str))
+  
+  /*
   def addRemoveMessage(host: String): Unit = msgQueue.add(MessageServer.REMOVE_HEADER + host)
-
   def addAddMessage(host: String) = msgQueue.add(MessageServer.ADD_HEADER + host)
-
+  */
+  
+  def addMessage(msg: Message) = {
+    msgQueue.add(MessageKind.MessageBegin + msg.getKind() + ":" + msg.toString())
+  }
+  
+  
   def run() {
     connect
     while (true) {
@@ -53,7 +66,8 @@ class MessageServerClient (
       }) {
         if (msg != null) {
           // send msg to message server
-          retryUntilSuccess(msg)
+          // retryUntilSuccess(msg)
+          processMessage(msg)
         }
         if (in.ready) {
           receiveMessage
@@ -83,7 +97,7 @@ class MessageServerClient (
     }
   }
 
-  def sendMessage (input : String) = {
+  private def sendMessage (input : String) = {
     try {
       out.write((input+"\n").getBytes)
       out.flush()
@@ -94,15 +108,16 @@ class MessageServerClient (
     }
   }
 
-  def receiveMessage() : String = {
-
+  def receiveMessage(): String = {
     try {
-      var res : String = null
-      while ( {
+      var res: String = null
+      while ({
         res = in.readLine
-        res != null && res.startsWith("BROADCAST: ")
+        //  res != null && res.startsWith("BROADCAST: ")
+        res != null
       }) {
-        processBroadcastMessage(res)
+        System.out.println(" received message :" + res)
+        processMessage(res)
       }
       res
     } catch {
@@ -111,28 +126,18 @@ class MessageServerClient (
         "IOException\n"
     }
   }
-
-  def retryUntilSuccess(cmd : String) : Unit = {
-    var msg : String = null
-    var res : String = null
-    do {
-      msg = (lastCmd + 1).toString + " " + cmd
-      sendMessage(msg)
-      res = receiveMessage
-      applyMessage(res)
-    } while (res.replaceFirst("\\d+\\s", "") != cmd)
+  
+  def processMessage(msg: String): Unit = {
+    val trimmed = msg.substring(msg.indexOf(MessageKind.MessageBegin) + MessageKind.MessageBegin.length())
+    System.out.println(" Handing mesg :" + msg + " to " + messageHandler)
+    messageDecoder(messageHandler, msg)
   }
-
-  def processBroadcastMessage(msg : String) : Unit = {
-    val trimmed = msg.replaceFirst("BROADCAST: ", "")
-    messageDecoder(func, trimmed)
-  }
-
+  
   // for now, only update lastCmd #
   def applyMessage(msg : String) : Unit = {
     val tokens = msg.trim.split("[ \t\n]")
     if (tokens(0).toInt < lastCmd + 1) {
-      println("warning: something msg is missed, tokens(0) = " + tokens(0) + ", lastCmd = " + lastCmd)
+      println("warning: some msg is missed, tokens(0) = " + tokens(0) + ", lastCmd = " + lastCmd)
     }
     lastCmd = tokens(0).toInt  // fast forward to the lastCmd provided by server
   }
@@ -140,5 +145,13 @@ class MessageServerClient (
   def getHosts() : String = {
     sendMessage("0 hosts")
     receiveMessage
+  }
+  
+  def sendMessage(msg: Message): Unit = {
+    try {
+      sendMessage(MessageKind.MessageBegin + msg.getKind() + ":" + msg.toString())
+    } catch {
+      case e: Exception => e.printStackTrace(); throw e
+    }
   }
 }

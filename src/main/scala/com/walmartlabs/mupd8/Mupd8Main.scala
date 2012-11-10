@@ -20,6 +20,7 @@ package com.walmartlabs.mupd8
 import scala.collection._
 import scala.collection.breakOut
 import scala.collection.JavaConverters._
+import scala.util.Sorting
 import scala.util.parsing.json.JSON
 import java.util.concurrent._
 import java.util.ArrayList
@@ -39,10 +40,15 @@ import com.walmartlabs.mupd8.compression.CompressionFactory
 import com.walmartlabs.mupd8.compression.CompressionService
 import com.walmartlabs.mupd8.Misc._
 import com.walmartlabs.mupd8.application._
+import com.walmartlabs.mupd8.messaging.MessageHandler
+import com.walmartlabs.mupd8.messaging.BasicMessageHandler
 import com.walmartlabs.mupd8.application.statistics.StatisticsBootstrap
 import com.walmartlabs.mupd8.application.statistics.StatisticsConstants
 import com.walmartlabs.mupd8.application.statistics.MapWrapper
 import com.walmartlabs.mupd8.application.statistics.UpdateWrapper
+import com.walmartlabs.mupd8.elasticity.ElasticWrapper
+import com.walmartlabs.mupd8.messaging.NodeFailureMessage
+
 
 import com.walmartlabs.mupd8.network.common.Decoder.DecodingState
 import scala.collection.JavaConversions
@@ -183,9 +189,11 @@ class MUCluster[T <: MapUpdateClass[T]]
         if (client.isConnected(i.toString))
           println("Connected to " + i + " " + host + ":" + port)
         else {
-          if (msClient != null)
-            msClient.addRemoveMessage(getIPAddress(hosts(i)._1))
-          println("Failed to connect to" + i + " " + host + ":" + port)
+          if (msClient != null) {
+            val nodeFailureMesg = new NodeFailureMessage(getIPAddress(hosts(i)._1))
+            msClient.addMessage(nodeFailureMesg)
+            println("Failed to connect to" + i + " " + host + ":" + port)
+          }
         }
       }
     }
@@ -194,9 +202,11 @@ class MUCluster[T <: MapUpdateClass[T]]
   def send(dest : Int, obj : T) {
     assert(dest < hosts.size)
     if (!client.send(dest.toString, obj)) {
-      if (msClient != null)
-        msClient.addRemoveMessage(getIPAddress(hosts(dest)._1))
-      log("Failed to send msg to dest " + dest)
+      if (msClient != null) {
+        val nodeFailureMsg = new NodeFailureMessage(getIPAddress(hosts(dest)._1))
+        msClient.addMessage(nodeFailureMsg)
+        log("Failed to send msg to dest " + dest)
+      }
     }
   }
 }
@@ -609,6 +619,13 @@ class SlateCache(val io : IoPool, val usageLimit : Long) {
     retVal
   }
 
+  def getAllItems() = {
+    lock.acquire()
+    val retVal = table.toList
+    lock.release()
+    retVal
+  }
+
 }
 
 object Mupd8Type extends Enumeration {
@@ -725,8 +742,8 @@ class AppStaticInfo(val configDir : Option[String], val appConfig : Option[Strin
   val cassWriteInterval = Option(config.getScopedValue(Array("mupd8", "slate_store", "write_interval"))) map {_.asInstanceOf[Number].intValue()} getOrElse 15
   val compressionCodec  = Option(config.getScopedValue(Array("mupd8", "slate_store", "compression"))).getOrElse("gzip").asInstanceOf[String].toLowerCase
 
-  var systemHosts       = config.getScopedValue(Array("mupd8", "system_hosts")).asInstanceOf[ArrayList[String]].asScala
-
+  var systemHosts       = config.getScopedValue(Array("mupd8", "system_hosts")).asInstanceOf[ArrayList[String]].asScala.toArray
+  var plannerHost       = electPlanner(systemHosts.toArray)
   val javaClassPath     = Option(config.getScopedValue(Array("mupd8", "java_class_path"))).getOrElse("share/java/*").asInstanceOf[String]
   val javaSetting       = Option(config.getScopedValue(Array("mupd8", "java_setting"))).getOrElse("-Xmx200M -Xms200M").asInstanceOf[String]
 
@@ -738,10 +755,27 @@ class AppStaticInfo(val configDir : Option[String], val appConfig : Option[Strin
   val messageServerPort = Option(config.getScopedValue(Array("mupd8", "messageserver", "port")))
 
   def internalPort = statusPort + 100;
-
+  
+  def isPlannerHost(): Boolean = {
+    isLocalHost(plannerHost)
+  }
+  
+  def electPlanner(systemHosts: Array[String]): String = synchronized {
+    Sorting.quickSort(systemHosts)
+    systemHosts(0)
+  }
+                
   def getPerformers(): Array[binary.Performer] = {
     performerArray
   }
+  
+  def removeHost(index: Int): Unit = {
+    systemHosts = systemHosts.zipWithIndex.filter(_._2 != index) map { case (host, index) => host }
+    plannerHost = electPlanner(systemHosts)
+  }
+  
+  def getPlannerHost() = synchronized { plannerHost }
+  
 }
 
 object PerformerPacket {
@@ -907,6 +941,7 @@ class TLS(appRun : AppRuntime) extends binary.PerformerUtilities {
   var perfPacket : PerformerPacket = null
   var startTime : Long = 0
 
+  def getSlateCache = slateCache
   val unifiedUpdaters : Set[Int] =
     (for ((oo,i) <- objects zipWithIndex ;
            o     <- oo ;
@@ -949,7 +984,16 @@ class AppRuntime(appID    : Int,
                 ) {
   private val sourceThreads : mutable.ListBuffer[(String,List[java.lang.Thread])] = new mutable.ListBuffer
   val hostUpdateLock = new Object
-
+  val ring : HashRing = new HashRing(app.systemHosts.length, 0)
+  def getAppStaticInfo(): AppStaticInfo = app
+  def getHashRing(): HashRing = ring
+  def getMessageHandler(): MessageHandler = new BasicMessageHandler(app, ring)
+  def initMapUpdatePool(poolsize: Int, ring: HashRing, clusterFactory: (PerformerPacket => Unit) => MUCluster[PerformerPacket]): MapUpdatePool[PerformerPacket] =
+    new MapUpdatePool[PerformerPacket](poolsize, ring, clusterFactory)
+  def getMapUpdatePool() = pool
+  def getMessageServerClient() = msClient
+  
+ /* 
   // start message server client
   def actOnMessage(msg : String) = {
     val trimmedMsg = msg.trim
@@ -972,16 +1016,19 @@ class AppRuntime(appID    : Int,
         }
       }
     }
+  }*/
+ 
+  val messageHandler = getMessageHandler
+  var msClient: MessageServerClient = null
+  if (app.messageServerHost != None && app.messageServerPort != None) {
+    msClient = new MessageServerClient(messageHandler,
+      app.messageServerHost.get.asInstanceOf[String],
+      app.messageServerPort.get.asInstanceOf[Number].intValue(),
+      1000L)
+    new Thread(msClient, "MessageServerClient").start
   }
-  val msClient : MessageServerClient = 
-    if (app.messageServerHost != None && app.messageServerPort != None) {
-      new MessageServerClient(actOnMessage,
-                              app.messageServerHost.get.asInstanceOf[String],
-                              app.messageServerPort.get.asInstanceOf[Number].intValue(),
-                              1000L)
-    } else null
-  if (msClient != null) new Thread(msClient, "MessageServerClient").start
-
+ 
+  /*
   // talk to message server and update system host list
   if (app.systemHosts.isEmpty) {
     msClient.addAddMessage(InetAddress.getLocalHost.getHostName)
@@ -990,22 +1037,21 @@ class AppRuntime(appID    : Int,
         hostUpdateLock.wait
       }
     }
-  }
-  
-  val ring : HashRing = new HashRing(app.systemHosts.length, 0)
-
-  val pool = new MapUpdatePool[PerformerPacket](
-    poolsize,
-    ring,
-    // TODO: maybe we should put def of port into one place
+  }*/
+ 
+   val pool = initMapUpdatePool(poolsize, ring,
     action => new MUCluster[PerformerPacket](
-      app.systemHosts.toArray.map((_,app.internalPort)),
-      app.internalPort,
-      PerformerPacket(0,0,Array(),Array(),"",this),
-      () => {new Decoder(this)},
+      app.systemHosts.map((_, app.internalPort)),
+      app.statusPort + 100,
+      PerformerPacket(0, 0, Array(), Array(), "", this),
+      () => { new Decoder(this) },
       action,
-      msClient)
-  )
+      msClient))
+ 
+  
+ // val ring : HashRing = new HashRing(app.systemHosts.length, 0)
+
+ 
   val storeIo   = if (useNullPool) new NullPool
                   else new CassandraPool(
                              app.cassHosts,
