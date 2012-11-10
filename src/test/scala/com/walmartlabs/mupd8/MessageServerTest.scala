@@ -58,6 +58,7 @@ class MessageServerTest extends FunSuite {
       println(" tokens :" + tokens(0))
      // assert(tokens(0).toInt === (i + 1))
     }
+    //TODO: Add check to node addition message as well
     assert(array.size === 5, "# of received msg is wrong")
     println("MessageServer Test is done")
   }
