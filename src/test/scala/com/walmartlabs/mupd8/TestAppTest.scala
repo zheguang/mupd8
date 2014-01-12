@@ -23,7 +23,7 @@ import org.scalatest.junit.JUnitRunner
 import org.scalatest.FunSuite
 import org.json.simple._
 import com.walmartlabs.mupd8.Mupd8Main._
-import com.walmartlabs.mupd8.miscM._
+import com.walmartlabs.mupd8.Misc._
 import com.walmartlabs.mupd8.GT._
 import java.util.ArrayList
 import java.util.Arrays
@@ -40,7 +40,7 @@ class TestAppTest extends FunSuite {
   val sp = "file:" + cfgDir + "/T10.data" + "," + "K1"
   val key = "k1"
   val paras = "-host localhost -pidFile " + cfgDir + "/testapp.pid" + " -key k1 -from file:" + cfgDir + "/T10.data -to T10Source -threads 6 -d " + cfgDir
-  val appStaticInfo = new AppStaticInfo(Some(cfgDir), None, None, false, false, false)
+  val appStaticInfo = new AppStaticInfo(Some(cfgDir), None, None)
   val keyCombo : (String, Key) = ("K1Updater", Key("1".map(_.toByte).toArray))
   val httpStatus = "http://localhost:" + appStaticInfo.statusPort + "/app/status"
   val k1Slate = "http://localhost:" + appStaticInfo.statusPort  + "/app/slate/TestApp/K1Updater/1"
@@ -57,7 +57,7 @@ class TestAppTest extends FunSuite {
     // useNullPool == true
     val appRuntime = new AppRuntime(0, numThreads, appStaticInfo, true)
     // start the source
-    appRuntime.startSource(to, sc, JavaConversions.seqAsJavaList(sp.split(',')))
+    appRuntime.startSource("testsource", to, sc, JavaConversions.seqAsJavaList(sp.split(',')))
     Thread.sleep(5000)
     val slate = getURL(k1Slate)
     assert(JSONValue.parse(slate).asInstanceOf[JSONObject].get("counter") == 1000)
@@ -74,7 +74,7 @@ class TestAppTest extends FunSuite {
 
     val appRuntime = new AppRuntime(0, numThreads, appStaticInfo, false)
     // start the source
-    appRuntime.startSource(to, sc, JavaConversions.seqAsJavaList(sp.split(',')))
+    appRuntime.startSource("testsource", to, sc, JavaConversions.seqAsJavaList(sp.split(',')))
     Thread.sleep(30000)
     val slate = getURL(k1Slate)
     assert(JSONValue.parse(slate).asInstanceOf[JSONObject].get("counter") == 1000)

@@ -21,11 +21,16 @@ import java.io.InputStream
 import java.net.InetAddress
 import java.net.Inet4Address
 import java.net.NetworkInterface
-
+import java.util.concurrent.Semaphore
+import java.util.Arrays
 import scala.collection.JavaConverters._
 import grizzled.slf4j.Logging
+import org.apache.http.client.methods.HttpGet
+import org.apache.http.util.EntityUtils
+import org.apache.http.impl.client.HttpClients
 
 object Misc extends Logging {
+  val HTTPCLIENT = HttpClients.createDefault();
 
   val SLATE_CAPACITY = 1048576 // 1M size
   val COMPRESSED_CAPACITY = 205824  // 201K
@@ -61,10 +66,9 @@ object Misc extends Logging {
   }
 
   /** A way to force the JVM to exit on uncaught Throwable. */
-  class TerminatingExceptionHandler extends Thread.UncaughtExceptionHandler {
+  class TerminatingExceptionHandler extends Thread.UncaughtExceptionHandler with Logging {
     override def uncaughtException(t : Thread, e : Throwable) : Unit = {
-      println("Uncaught Throwable for thread " + t.getName() + " : " + e.getMessage() + ", exiting.");
-      e.printStackTrace(new java.io.PrintStream(System.out));
+      error("Uncaught Throwable for thread " + t.getName() + " : " + e.getMessage() + ", exiting.", e);
       System.exit(2);
     }
   }
@@ -100,10 +104,84 @@ object Misc extends Logging {
     yield iaddr.getHostAddress
   }
 
-  def getIPAddress(hostName : String) : String = { InetAddress.getByName(hostName).getHostAddress() }
-
   def isLocalHost(hostName : String) = {
-    val address = getIPAddress(hostName)
+    val address = InetAddress.getByName(hostName).getHostAddress()
     localIPAddresses.exists(_ == address)
   }
+
+  val INTMAX: Long = Int.MaxValue.toLong
+  val HASH_BASE: Long = Int.MaxValue.toLong - Int.MinValue.toLong
+
+  // A SlateUpdater receives a SlateValue.slate of type SlateObject.
+  type SlateObject = Object
+
+  def str(a: Array[Byte]) = new String(a)
+
+  def argParser(syntax: Map[String, (Int, String)], args: Array[String]): Map[String, List[String]] = {
+    var parseSuccess = true
+
+    def next(i: Int): Option[((String, List[String]), Int)] =
+      if (i >= args.length)
+        None
+      else
+        syntax.get(args(i)).filter(i + _._1 < args.length).map { p =>
+          ((args(i), (i + 1 to i + p._1).toList.map(args(_))), i + p._1 + 1)
+        }.orElse { parseSuccess = false; None }
+
+    val result = unfold(0, next).sortWith(_._1 < _._1)
+
+    parseSuccess = parseSuccess && !result.isEmpty && !(result zip result.tail).exists(p => p._1._1 == p._2._1)
+    if (parseSuccess)
+      Map.empty ++ result
+    else
+      Map.empty
+  }
+
+  class Later[T] {
+    var obj: Option[T] = None
+    val sem = new Semaphore(0)
+    def get(): T = { sem.acquire(); obj.get }
+    def set(x: T) { obj = Option(x); sem.release() }
+  }
+
+  def fetchURL(urlStr: String): Option[Array[Byte]] = {
+    excToOptionWithLog {
+       val httpget = new HttpGet(urlStr);
+       EntityUtils.toByteArray(HTTPCLIENT.execute(httpget).getEntity())
+    }
+  }
 }
+
+object Mupd8Type extends Enumeration {
+  type Mupd8Type = Value
+  val Source, Mapper, Updater = Value
+}
+
+
+object GT {
+
+  // wrap up Array[Byte] with Key since Array[Byte]'s comparison doesn't
+  // compare array's content which is needed in mupd8
+  case class Key(val value: Array[Byte]) {
+
+  override def hashCode() = Arrays.hashCode(value)
+
+    override def equals(other: Any) = other match {
+      case that: Key => Arrays.equals(that.value, value)
+      case _ => false
+    }
+
+    override def toString() = {
+      new String(value)
+    }
+  }
+
+  type Event = Array[Byte]
+  type Priority = Int
+
+  val SOURCE_PRIORITY: Priority = 96 * 1024
+  val NORMAL_PRIORITY: Priority = 64 * 1024
+  val SYSTEM_PRIORITY: Priority = 0
+  type TypeSig = (Int, Int) // AppID, PerformerID
+}
+

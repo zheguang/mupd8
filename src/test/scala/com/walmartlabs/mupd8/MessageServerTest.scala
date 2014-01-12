@@ -23,6 +23,7 @@ import org.scalatest.junit.JUnitRunner
 import org.scalatest.FunSuite
 import scala.util.Random
 import scala.collection.JavaConverters._
+import java.net.InetAddress
 
 @RunWith(classOf[JUnitRunner])
 class MessageServerTest extends FunSuite {
@@ -30,27 +31,24 @@ class MessageServerTest extends FunSuite {
   test("MessageServer/Client add/remove") {
     val random = new Random(System.currentTimeMillis)
 
-    val server = new MessageServer.MessageServerThread(4568, true)
-    val sThread = new Thread(server, "Message Server Thread")
-    sThread.start
+    val server = new MessageServer(null, 4568, Map.empty, true)
+    server.start
     Thread.sleep(500)
-    val client = new MessageServerClient("localhost", 4568, 50)
+
+    val client = new MessageServerClient(null, 50, Host(InetAddress.getByName("localhost").getHostAddress, "localhost"), 4568)
     Thread.sleep(2000)
-    val nodes = Vector.range(0, 5) map (i => "machine" + (random.nextInt(10) + i * 10) + ".example.com")
-    for (node <- nodes) client.sendMessage(NodeJoinMessage(node))
+    val nodes = Vector.range(0, 5) map (i => Host("192.168.1." + i.toString, "machine" + (random.nextInt(10) + i * 10) + ".example.com"))
+    for (node <- nodes) client.sendMessage(NodeChangeMessage(Set(node), Set.empty))
     Thread.sleep(1000)
-    assert(MessageServer.ring2.size == 5)
-    for (node <- nodes) client.sendMessage(NodeRemoveMessage(node))
+    assert(server.ring.size == 5)
+    for (node <- nodes) client.sendMessage(NodeChangeMessage(Set.empty, Set(node)))
     Thread.sleep(1000)
-    assert(MessageServer.ring2 == null)
-    assert(MessageServer.lastCmdID == 9)
-    assert(MessageServer.lastCmdID != 11)
+    assert(server.ring == null)
+    assert(server.lastCmdID == 10)
+    assert(server.lastCmdID != 11)
     server.shutdown
     println("MessageServer Test is done")
   }
-
-  // test("LocalMessageServer/Client") {
-  // }
 
 }
 

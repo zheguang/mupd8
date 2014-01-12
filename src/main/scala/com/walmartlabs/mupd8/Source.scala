@@ -14,9 +14,11 @@
  * limitations under the License.
  *
  */
-package com.walmartlabs.mupd8.application.statistics;
 
-public class StatisticsConstants {
+package com.walmartlabs.mupd8
 
-	public static final String DEFAULT_PRE_PERFORMER = "com.walmartlabs.mupd8.application.statistics.PerformerStatisticsCollector";
+class Source(val name: String, val className: String, val performer: String, val parameters: List[String]) {
+  override def toString: String = {
+    "Source: name = " + name + ", className = " + className + ", performer = " + performer + ", parameters = " + parameters
+  }
 }

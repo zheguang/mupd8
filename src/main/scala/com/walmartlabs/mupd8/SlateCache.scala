@@ -1,6 +1,23 @@
+/**
+ * Copyright 2011-2012 @WalmartLabs, a division of Wal-Mart Stores, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
 package com.walmartlabs.mupd8
 
-import com.walmartlabs.mupd8.miscM._
+import com.walmartlabs.mupd8.Misc._
 import com.walmartlabs.mupd8.GT._
 import com.walmartlabs.mupd8.application.binary
 import grizzled.slf4j.Logging
@@ -44,9 +61,9 @@ class SlateCache(val io: IoPool, val usageLimit: Long, val tls: TLS) extends Log
       while (io.pendingCount > 200) java.lang.Thread.sleep(100)
       def slateFromBytes(p:Array[Byte]) = { slateBuilder.toSlate(p) }
       if( doSafePut ) {
-        io.fetch(key._1, key._2, p => action(safePut(key, p.map {slateFromBytes}.getOrElse{updater.getDefaultSlate()})))
+        io.fetchSlates(key._1, key._2, p => action(safePut(key, p.map {slateFromBytes}.getOrElse{updater.getDefaultSlate()})))
       } else {
-        io.fetch(key._1, key._2, p => action(p.map {slateFromBytes}.getOrElse{updater.getDefaultSlate()}))
+        io.fetchSlates(key._1, key._2, p => action(p.map {slateFromBytes}.getOrElse{updater.getDefaultSlate()}))
       }
     }
   }
@@ -113,7 +130,7 @@ class SlateCache(val io: IoPool, val usageLimit: Long, val tls: TLS) extends Log
                                    else if (tls.appRun.candidateRing == null) false
                                    else {
                                      // decompose key to build performerpacket key
-                                     tls.appRun.candidateRing(PerformerPacket.getKey(tls.appRun.appStatic.performerName2ID(x._1._1), x._1._2)) != tls.appRun.appStatic.self
+                                     tls.appRun.self.ip.compareTo(tls.appRun.candidateRing(PerformerPacket.getKey(tls.appRun.appStatic.performerName2ID(x._1._1), x._1._2))) != 0
                                    }).toList
     lock.release
     retVal
